@@ -10,6 +10,7 @@ import {
   Res,
   Req,
   UnauthorizedException,
+  BadRequestException,
 } from '@nestjs/common';
 import Redis from 'ioredis';
 import { AuthService } from './auth.service';
@@ -41,57 +42,63 @@ export class AuthController {
     return this.authService.refreshToken(req.user);
   }
 
-@UseGuards(JwtAuthGuard)
-@Get('authorize')
-async authorize(
-  @Query('redirect_uri') redirectUri: string,
-  @Query('client_id') clientId: string,
-  @Res() res: Response,
-  @Req() req: ExpressRequest,
-) {
-  const user = req.user;
+  @UseGuards(JwtAuthGuard)
+  @Get('authorize')
+  async authorize(
+    @Query('redirect_uri') redirectUri: string,
+    @Query('client_id') clientId: string,
+    @Req() req: ExpressRequest,
+  ) {
+    if (!redirectUri || !clientId) {
+      throw new BadRequestException('Missing redirect_uri or client_id');
+    }
 
-  const code = uuid();
+    const user = req.user;
+    console.log('Authorize user:', user);
 
-  // ✅ Store user, client_id, and redirect_uri
-  await this.redis.set(
-    `code:${code}`,
-    JSON.stringify({
-      user,
-      client_id: clientId,
-      redirect_uri: redirectUri,
-    }),
-    'EX',
-    300,
-  );
+    const code = uuid();
 
+    await this.redis.set(
+      `web_code:${code}`,
+      JSON.stringify({
+        user,
+        client_id: clientId,
+        redirect_uri: redirectUri,
+      }),
+      'EX',
+      300,
+    );
 
-
-  return res.redirect(`callback?code=${code}`);
-}
+    console.log('Generated code:', code); // Debug log
+    return { code };
+  }
 
   @Post('token')
   async exchangeCode(
     @Body() body: { code: string; client_id: string; redirect_uri: string },
   ) {
-    const raw = await this.redis.get(`code:${body.code}`);
-if (!raw) throw new UnauthorizedException('Invalid or expired code');
+    console.log('Token exchange request:', body); // Debug log
+    const raw = await this.redis.get(`web_code:${body.code}`);
+    console.log('Redis raw data:', raw); // Debug log
 
-const stored = JSON.parse(raw);
+    if (!raw) throw new UnauthorizedException('Invalid or expired code');
 
-// Validate client_id and redirect_uri
-if (stored.client_id !== body.client_id || stored.redirect_uri !== body.redirect_uri) {
-  throw new UnauthorizedException('Invalid client or redirect URI');
-}
+    const stored = JSON.parse(raw);
+    console.log('Stored data:', stored); // Debug log
 
-    await this.redis.del(`code:${body.code}`);
-  
+    if (stored.client_id !== body.client_id || stored.redirect_uri !== body.redirect_uri) {
+      console.log('Validation failed - client_id:', stored.client_id, body.client_id, 'redirect_uri:', stored.redirect_uri, body.redirect_uri);
+      throw new UnauthorizedException('Invalid client or redirect URI');
+    }
+
+    await this.redis.del(`web_code:${body.code}`);
+
     const payload = {
       sub: stored.user.id,
       email: stored.user.email,
       roles: stored.user.roles,
     };
-  
+
     return {
       access_token: this.authService.jwtService.sign(payload),
       refresh_token: this.authService.jwtService.sign(payload, {
