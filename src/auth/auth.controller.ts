@@ -52,12 +52,9 @@ export class AuthController {
     if (!redirectUri || !clientId) {
       throw new BadRequestException('Missing redirect_uri or client_id');
     }
-  
-    // Check user session or token - here assuming JWT in cookie or header
     const token = req.headers.authorization?.split(' ')[1];
   
     if (!token) {
-      // User NOT logged in: redirect to login page with original params
       const loginUrl = `http://localhost:3000?redirect_uri=${encodeURIComponent(
         redirectUri,
       )}&client_id=${clientId}`;
@@ -66,8 +63,6 @@ export class AuthController {
   
     try {
       const payload = this.authService.jwtService.verify(token);
-  
-      // Generate authorization code
       const code = uuid();
   
       await this.redis.set(
@@ -81,47 +76,66 @@ export class AuthController {
         300,
       );
   
-      // Redirect user to SP callback with code
       return res.redirect(`${redirectUri}?code=${code}`);
     } catch {
-      // Invalid token, redirect to login page again
       const loginUrl = `http://localhost:4000/login?redirect_uri=${encodeURIComponent(
         redirectUri,
       )}&client_id=${clientId}`;
       return res.redirect(loginUrl);
     }
   }
-  
-  @Post('token')
-  async exchangeCode(
-    @Body() body: { code: string; client_id: string; redirect_uri: string },
+
+@Post('token')
+async exchangeCode(
+  @Body() body: { code: string; client_id: string; redirect_uri: string },
+  @Res({ passthrough: true }) res: Response, 
+) {
+  const raw = await this.redis.get(`web_code:${body.code}`);
+
+  if (!raw) throw new UnauthorizedException('Invalid or expired code');
+
+  const stored = JSON.parse(raw);
+
+  if (
+    stored.client_id !== body.client_id ||
+    stored.redirect_uri !== body.redirect_uri
   ) {
-    const raw = await this.redis.get(`web_code:${body.code}`);
-  
-    if (!raw) throw new UnauthorizedException('Invalid or expired code');
-  
-    const stored = JSON.parse(raw);
-  
-    if (stored.client_id !== body.client_id || stored.redirect_uri !== body.redirect_uri) {
-      throw new UnauthorizedException('Invalid client or redirect URI');
-    }
-  
-    await this.redis.del(`web_code:${body.code}`);
-  
-    const payload = {
-      sub: stored.user.sub,     
-      email: stored.user.email,
-      roles: stored.user.roles,
-    };
-  
-    return {
-      access_token: this.authService.jwtService.sign(payload),
-      refresh_token: this.authService.jwtService.sign(payload, {
-        expiresIn: '30d',
-      }),
-    };
+    throw new UnauthorizedException('Invalid client or redirect URI');
   }
-  
+
+  await this.redis.del(`web_code:${body.code}`);
+
+  const payload = {
+    sub: stored.user.sub,
+    name: stored.user.name,
+    email: stored.user.email,
+    roles: stored.user.roles,
+    
+  };
+
+  const access_token = this.authService.jwtService.sign(payload);
+  const refresh_token = this.authService.jwtService.sign(payload, {
+    expiresIn: '30d',
+  });
+
+
+  res.cookie('access_token', access_token, {
+    httpOnly: true,
+    secure: true, 
+    sameSite: 'lax',
+    maxAge: 1000 * 60 * 60 * 24 * 7, 
+  });
+
+  res.cookie('refresh_token', refresh_token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+    maxAge: 1000 * 60 * 60 * 24 * 30, 
+  });
+
+  return { message: 'Login successful' };
+}
+
   
   @UseGuards(JwtAuthGuard)
   @Get('me')
