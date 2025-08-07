@@ -30,7 +30,6 @@ export class AuthController {
     return this.authService.login(body.email, body.password);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get('validate')
   validateToken(@Request() req) {
     return req.user; 
@@ -43,47 +42,51 @@ export class AuthController {
   }
   
   @Get('authorize')
-  async authorize(
-    @Query('redirect_uri') redirectUri: string,
-    @Query('client_id') clientId: string,
-    @Req() req: ExpressRequest,
-    @Res() res: Response,
-  ) {
-    if (!redirectUri || !clientId) {
-      throw new BadRequestException('Missing redirect_uri or client_id');
-    }
-    const token = req.headers.authorization?.split(' ')[1];
-  
-    if (!token) {
-      const loginUrl = `http://localhost:3000?redirect_uri=${encodeURIComponent(
-        redirectUri,
-      )}&client_id=${clientId}`;
-      return res.redirect(loginUrl);
-    }
-  
-    try {
-      const payload = this.authService.jwtService.verify(token);
-      const code = uuid();
-  
-      await this.redis.set(
-        `web_code:${code}`,
-        JSON.stringify({
-          user: payload,
-          client_id: clientId,
-          redirect_uri: redirectUri,
-        }),
-        'EX',
-        300,
-      );
-  
-      return res.redirect(`${redirectUri}?code=${code}`);
-    } catch {
-      const loginUrl = `http://localhost:4000/login?redirect_uri=${encodeURIComponent(
-        redirectUri,
-      )}&client_id=${clientId}`;
-      return res.redirect(loginUrl);
-    }
+async authorize(
+  @Query('redirect_uri') redirectUri: string,
+  @Query('client_id') clientId: string,
+  @Req() req: ExpressRequest,
+  @Res() res: Response,
+) {
+  if (!redirectUri || !clientId) {
+    throw new BadRequestException('Missing redirect_uri or client_id');
   }
+
+  const token =
+    req.headers.authorization?.split(' ')[1] ||
+    req.cookies?.access_token;
+
+  if (!token) {
+    const loginUrl = `http://localhost:3000?redirect_uri=${encodeURIComponent(
+      redirectUri,
+    )}&client_id=${clientId}`;
+    return res.redirect(loginUrl);
+  }
+
+  try {
+    const payload = this.authService.jwtService.verify(token);
+    const code = uuid();
+
+    await this.redis.set(
+      `web_code:${code}`,
+      JSON.stringify({
+        user: payload,
+        client_id: clientId,
+        redirect_uri: redirectUri,
+      }),
+      'EX',
+      300,
+    );
+
+    return res.redirect(`${redirectUri}?code=${code}`);
+  } catch (err) {
+    const loginUrl = `http://localhost:4000/login?redirect_uri=${encodeURIComponent(
+      redirectUri,
+    )}&client_id=${clientId}`;
+    return res.redirect(loginUrl);
+  }
+}
+
 
 @Post('token')
 async exchangeCode(
